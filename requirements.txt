@@ -25,6 +25,7 @@ tiktoken>=0.5.0
 streamlit>=1.30.0
 fastapi>=0.100.0
 uvicorn>=0.20.0
+python-multipart>=0.0.9
 
 # Utilities & Environment Configuration
 python-dotenv>=1.0.0
