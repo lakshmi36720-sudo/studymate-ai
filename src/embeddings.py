@@ -1,5 +1,5 @@
 from langchain_core.embeddings import Embeddings
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import OpenAIEmbeddings
 from src.config import EMBEDDING_MODEL_NAME, OPENAI_API_KEY
 

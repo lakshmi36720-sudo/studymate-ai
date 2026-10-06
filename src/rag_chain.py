@@ -3,13 +3,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI
-from src.config import LLM_MODEL_NAME, OPENAI_API_KEY, TOP_K_RESULTS
+from langchain_huggingface import HuggingFacePipeline
+from src.config import LLM_MODEL_NAME, LLM_PROVIDER, OPENAI_API_KEY, TOP_K_RESULTS
 from src.vector_store import StudyVectorStore
 
+NOT_FOUND_RESPONSE = "I couldn't find the answer to this question in your uploaded study material."
 
 QA_PROMPT_TEMPLATE = """You are StudyMate AI, an expert AI study assistant.
-Use the following retrieved study context to answer the student's question accurately, concisely, and clearly.
-If the answer cannot be found in the provided context, state that clearly instead of making things up.
+Answer the student's question based ONLY on the provided retrieved study context below.
+If the answer cannot be found in the provided context, respond with EXACTLY: "I couldn't find the answer to this question in your uploaded study material."
+Do NOT use outside or general knowledge. Do NOT repeat the prompt, context, or instructions in your answer.
 
 Retrieved Context:
 {context}
@@ -41,28 +44,107 @@ class StudyRAGChain:
 
     def __init__(self, vector_store: StudyVectorStore, model_name: str = LLM_MODEL_NAME):
         self.vector_store = vector_store
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=0.3,
-            api_key=OPENAI_API_KEY if OPENAI_API_KEY else None,
-        )
+
+        if LLM_PROVIDER == "openai":
+            self.llm = ChatOpenAI(
+                model=model_name,
+                temperature=0.3,
+                api_key=OPENAI_API_KEY if OPENAI_API_KEY else None,
+            )
+        elif LLM_PROVIDER in ["local", "huggingface"]:
+            try:
+                self.llm = HuggingFacePipeline.from_model_id(
+                    model_id="google/flan-t5-base",
+                    task="text2text-generation",
+                    pipeline_kwargs={"max_new_tokens": 512, "truncation": True},
+                )
+            except Exception:
+                from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
+                model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
+                tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
+                pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=512, truncation=True)
+                self.llm = HuggingFacePipeline(pipeline=pipe)
+        else:
+            raise ValueError(f"Unsupported LLM provider: '{LLM_PROVIDER}'")
 
     def _format_docs(self, docs) -> str:
         return "\n\n---\n\n".join(doc.page_content for doc in docs)
 
+    def _clean_llm_response(self, raw_response: str) -> str:
+        """Strips system prompts, context regurgitation, and internal template text from LLM output."""
+        if not raw_response:
+            return ""
+
+        text = raw_response
+
+        # If the output repeats "Answer:", extract text after the last "Answer:"
+        if "Answer:" in text:
+            text = text.split("Answer:")[-1]
+
+        # Remove common prompt headers if present
+        for header in [
+            "Human:",
+            "Assistant:",
+            "You are StudyMate AI",
+            "Retrieved Context:",
+            "Question:",
+            "Study Material:",
+        ]:
+            if header in text:
+                text = text.replace(header, "")
+
+        return text.strip()
+
     def ask_question(self, question: str, top_k: int = TOP_K_RESULTS) -> Dict[str, Any]:
         """Answers a student's question using RAG context."""
-        retriever = self.vector_store.as_retriever(search_kwargs={"k": top_k})
-        docs = retriever.invoke(question)
-        context = self._format_docs(docs)
+        # Retrieve documents with relevance scores
+        results = self.vector_store.similarity_search(question, k=top_k)
+        docs = [doc for doc, _score in results] if results else []
 
+        # Check distance score threshold (L2 distance threshold ~ 1.35)
+        is_relevant = False
+        if results:
+            best_score = min(score for _doc, score in results)
+            if best_score < 1.35:
+                is_relevant = True
+
+        if not is_relevant or not docs:
+            return {
+                "question": question,
+                "answer": NOT_FOUND_RESPONSE,
+                "source_documents": docs,
+            }
+
+        context = self._format_docs(docs)
         prompt = ChatPromptTemplate.from_template(QA_PROMPT_TEMPLATE)
         chain = prompt | self.llm | StrOutputParser()
-        response = chain.invoke({"context": context, "question": question})
+        raw_response = chain.invoke({"context": context, "question": question})
+
+        cleaned_answer = self._clean_llm_response(raw_response)
+
+        # Check if LLM response indicates missing information or is empty/regurgitated
+        lower_ans = cleaned_answer.lower()
+        missing_indicators = [
+            "couldn't find",
+            "cannot be found",
+            "not found",
+            "not mentioned",
+            "no information",
+            "don't know",
+            "does not contain",
+            "does not state",
+            "is not provided",
+            "cannot answer",
+        ]
+
+        if not cleaned_answer or any(indicator in lower_ans for indicator in missing_indicators):
+            final_answer = NOT_FOUND_RESPONSE
+        else:
+            final_answer = cleaned_answer
 
         return {
             "question": question,
-            "answer": response,
+            "answer": final_answer,
             "source_documents": docs,
         }
 
@@ -74,7 +156,8 @@ class StudyRAGChain:
 
         prompt = ChatPromptTemplate.from_template(SUMMARY_PROMPT_TEMPLATE)
         chain = prompt | self.llm | StrOutputParser()
-        return chain.invoke({"context": context})
+        raw_res = chain.invoke({"context": context})
+        return self._clean_llm_response(raw_res)
 
     def generate_quiz(self, topic: str = "general", top_k: int = 5) -> str:
         """Generates practice quiz questions based on the document context."""
@@ -84,4 +167,5 @@ class StudyRAGChain:
 
         prompt = ChatPromptTemplate.from_template(QUIZ_PROMPT_TEMPLATE)
         chain = prompt | self.llm | StrOutputParser()
-        return chain.invoke({"context": context})
+        raw_res = chain.invoke({"context": context})
+        return self._clean_llm_response(raw_res)

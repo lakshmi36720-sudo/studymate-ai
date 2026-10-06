@@ -11,6 +11,8 @@ faiss-cpu>=1.7.4
 # Embeddings & HuggingFace integration
 sentence-transformers>=2.2.2
 huggingface-hub>=0.20.0
+transformers>=4.30.0
+torch>=2.0.0
 openai>=1.0.0
 
 # Document Processing & Loaders
