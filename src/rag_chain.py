@@ -4,23 +4,12 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI
 from langchain_huggingface import HuggingFacePipeline
-from src.config import LLM_MODEL_NAME, LLM_PROVIDER, OPENAI_API_KEY, TOP_K_RESULTS
+from src.config import LLM_MODEL_NAME, LLM_PROVIDER, LOCAL_LLM_MODEL_NAME, OPENAI_API_KEY, TOP_K_RESULTS
 from src.vector_store import StudyVectorStore
 
 NOT_FOUND_RESPONSE = "I couldn't find the answer to this question in your uploaded study material."
 
-QA_PROMPT_TEMPLATE = """You are StudyMate AI, an expert AI study assistant.
-Answer the student's question based ONLY on the provided retrieved study context below.
-If the answer cannot be found in the provided context, respond with EXACTLY: "I couldn't find the answer to this question in your uploaded study material."
-Do NOT use outside or general knowledge. Do NOT repeat the prompt, context, or instructions in your answer.
-
-Retrieved Context:
-{context}
-
-Question:
-{question}
-
-Answer:"""
+QA_PROMPT_TEMPLATE = "Answer the question using the context. Context: {context} Question: {question}"
 
 SUMMARY_PROMPT_TEMPLATE = """You are StudyMate AI.
 Summarize the following study material into key concepts, bullet points, and actionable study takeaways.
@@ -54,14 +43,14 @@ class StudyRAGChain:
         elif LLM_PROVIDER in ["local", "huggingface"]:
             try:
                 self.llm = HuggingFacePipeline.from_model_id(
-                    model_id="google/flan-t5-base",
+                    model_id=LOCAL_LLM_MODEL_NAME,
                     task="text2text-generation",
                     pipeline_kwargs={"max_new_tokens": 512, "truncation": True},
                 )
             except Exception:
                 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
-                model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
-                tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
+                model = AutoModelForSeq2SeqLM.from_pretrained(LOCAL_LLM_MODEL_NAME)
+                tokenizer = AutoTokenizer.from_pretrained(LOCAL_LLM_MODEL_NAME)
                 pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=512, truncation=True)
                 self.llm = HuggingFacePipeline(pipeline=pipe)
         else:
@@ -101,14 +90,7 @@ class StudyRAGChain:
         results = self.vector_store.similarity_search(question, k=top_k)
         docs = [doc for doc, _score in results] if results else []
 
-        # Check distance score threshold (L2 distance threshold ~ 1.35)
-        is_relevant = False
-        if results:
-            best_score = min(score for _doc, score in results)
-            if best_score < 1.35:
-                is_relevant = True
-
-        if not is_relevant or not docs:
+        if not docs:
             return {
                 "question": question,
                 "answer": NOT_FOUND_RESPONSE,
@@ -122,29 +104,9 @@ class StudyRAGChain:
 
         cleaned_answer = self._clean_llm_response(raw_response)
 
-        # Check if LLM response indicates missing information or is empty/regurgitated
-        lower_ans = cleaned_answer.lower()
-        missing_indicators = [
-            "couldn't find",
-            "cannot be found",
-            "not found",
-            "not mentioned",
-            "no information",
-            "don't know",
-            "does not contain",
-            "does not state",
-            "is not provided",
-            "cannot answer",
-        ]
-
-        if not cleaned_answer or any(indicator in lower_ans for indicator in missing_indicators):
-            final_answer = NOT_FOUND_RESPONSE
-        else:
-            final_answer = cleaned_answer
-
         return {
             "question": question,
-            "answer": final_answer,
+            "answer": cleaned_answer,
             "source_documents": docs,
         }
 

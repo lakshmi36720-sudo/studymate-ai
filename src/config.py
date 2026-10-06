@@ -15,6 +15,7 @@ HUGGINGFACEHUB_API_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gpt-3.5-turbo")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()  # openai, huggingface, or local
+LOCAL_LLM_MODEL_NAME = "google/flan-t5-large"
 
 # RAG & Chunking Parameters
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
